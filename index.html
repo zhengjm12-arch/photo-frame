@@ -1,0 +1,1383 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="manifest.json">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>电子相框</title>
+<style>
+  /* ============ 全局与全屏兜底 ============ */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    height: 100%; width: 100%;
+    overflow: hidden;
+    background: #000;
+    overscroll-behavior: none;
+    -webkit-user-select: none; user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* ============ 照片舞台 ============ */
+  #stage { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 1; overflow: hidden; touch-action: none; background: #000; }
+  .layer {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    opacity: 0; transform: none; pointer-events: none;
+    will-change: opacity, transform;
+  }
+  .layer .bg {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: cover; filter: blur(24px); transform: scale(1.15);
+  }
+  .layer .fg {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: contain;
+  }
+
+  /* ============ 空照片提示 ============ */
+  #tip {
+    position: fixed; inset: 0; z-index: 2;
+    display: flex; align-items: center; justify-content: center;
+    text-align: center; color: rgba(255,255,255,.8); font-size: 18px; line-height: 1.8;
+    pointer-events: none; padding: 24px;
+    opacity: 0; visibility: hidden; transition: opacity .4s ease, visibility .4s ease;
+  }
+
+  /* ============ 时钟 ============ */
+  #clock {
+    position: fixed; z-index: 10; pointer-events: none;
+    opacity: 0; visibility: hidden; transition: opacity .4s ease, visibility .4s ease;
+    color: #fff; text-align: right; text-shadow: 0 1px 3px rgba(0,0,0,.6);
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  #clock.top-right    { top: calc(env(safe-area-inset-top, 0px) + 16px);    right: calc(env(safe-area-inset-right, 0px) + 16px); }
+  #clock.top-left     { top: calc(env(safe-area-inset-top, 0px) + 16px);    left: calc(env(safe-area-inset-left, 0px) + 16px);  text-align: left; }
+  #clock.bottom-right { bottom: calc(env(safe-area-inset-bottom, 0px) + 16px); right: calc(env(safe-area-inset-right, 0px) + 16px); }
+  #clock.bottom-left  { bottom: calc(env(safe-area-inset-bottom, 0px) + 16px); left: calc(env(safe-area-inset-left, 0px) + 16px);  text-align: left; }
+  #clockTime { font-size: clamp(34px, 6vw, 72px); font-weight: 600; line-height: 1; }
+  #clockDate { font-size: clamp(14px, 2vw, 20px); margin-top: 4px; opacity: .9; }
+  #clockWeather { font-size: clamp(13px, 1.8vw, 18px); margin-top: 6px; opacity: .95; }
+
+  body.ui-visible #clock, body.ui-visible #settingsBtn, body.ui-visible #tip { opacity: 1; visibility: visible; }
+
+  /* ============ 设置按钮 ============ */
+  #settingsBtn {
+    position: fixed; z-index: 20;
+    right: calc(env(safe-area-inset-right, 0px) + 16px);
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 16px);
+    padding: 10px 16px; font-size: 14px; color: #fff;
+    background: rgba(0,0,0,.35); border: 1px solid rgba(255,255,255,.3); border-radius: 999px;
+    backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+    opacity: 0; visibility: hidden; transition: opacity .4s ease, visibility .4s ease; cursor: pointer;
+  }
+
+  /* ============ 退出按钮 ============ */
+  #exitBtn {
+    position: fixed; z-index: 30; left: 50%; top: 50%;
+    transform: translate(-50%, -50%); padding: 16px 32px; font-size: 18px;
+    color: #fff; background: rgba(220,38,38,.88); border: none; border-radius: 12px; cursor: pointer;
+  }
+
+  /* ============ 管理界面（全屏） ============ */
+  #settingsPanel {
+    position: fixed; inset: 0; z-index: 40; background: #141419;
+    display: flex; flex-direction: column;
+    touch-action: auto;
+    color: #eee;
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  .panel-head {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 12px 16px;
+    padding-top: calc(env(safe-area-inset-top, 0px) + 10px);
+    border-bottom: 1px solid rgba(255,255,255,.08);
+    flex-shrink: 0;
+  }
+  #panelTitle { font-size: 22px; font-weight: 700; }
+  .head-actions { display: flex; align-items: center; gap: 10px; }
+  .panel-close {
+    padding: 8px 16px; border: none; border-radius: 999px;
+    background: rgba(59,130,246,.9); color: #fff; font-size: 15px; cursor: pointer;
+  }
+  .panel-body {
+    flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
+    padding: 12px 12px 20px;
+    user-select: none; -webkit-user-select: none;
+  }
+
+  /* ---- 通用控件 ---- */
+  .btn { padding: 8px 14px; font-size: 13px; color: #fff; border: none; border-radius: 999px; cursor: pointer; }
+  .btn-blue { background: rgba(59,130,246,.9); }
+  .btn-red { background: rgba(220,38,38,.85); }
+  select, input[type="text"] {
+    padding: 8px 12px; font-size: 15px; color: #eee; background: #2a2a32;
+    border: 1px solid rgba(255,255,255,.15); border-radius: 8px;
+  }
+  input[type="text"] { flex: 1; }
+  .row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+  .row label { font-size: 15px; flex-shrink: 0; min-width: 72px; }
+  .row .val { font-size: 15px; color: #6ab7ff; min-width: 48px; text-align: right; }
+  input[type="range"] { flex: 1; min-width: 120px; }
+
+  /* ---- 照片 Tab：分类 chips ---- */
+  .chip-row { display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 12px; -webkit-overflow-scrolling: touch; }
+  .chip {
+    padding: 7px 16px; border-radius: 999px; background: #26262e; color: #ccc;
+    font-size: 14px; white-space: nowrap; border: none; cursor: pointer; flex-shrink: 0;
+  }
+  .chip.active { background: #3b82f6; color: #fff; font-weight: 600; }
+
+  /* ---- 照片网格（密集瀑布风格） ---- */
+  #photoGrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; }
+  @media (min-width: 480px)  { #photoGrid { grid-template-columns: repeat(4, 1fr); } }
+  @media (min-width: 700px)  { #photoGrid { grid-template-columns: repeat(6, 1fr); } }
+  @media (min-width: 1000px) { #photoGrid { grid-template-columns: repeat(8, 1fr); } }
+  .grid-item { position: relative; aspect-ratio: 1; overflow: hidden; background: #26262e; cursor: pointer; }
+  .grid-item img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .grid-empty { grid-column: 1 / -1; color: #777; font-size: 14px; text-align: center; padding: 40px 0; }
+
+  /* ---- 相册 Tab ---- */
+  #albumGrid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px 12px; }
+  @media (min-width: 600px) { #albumGrid { grid-template-columns: repeat(3, 1fr); } }
+  @media (min-width: 900px) { #albumGrid { grid-template-columns: repeat(4, 1fr); } }
+  .album-card { position: relative; cursor: pointer; }
+  .album-cover {
+    position: relative; aspect-ratio: 1; border-radius: 12px; overflow: hidden; background: #26262e;
+  }
+  .album-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .album-del {
+    position: absolute; top: 6px; right: 6px; width: 26px; height: 26px;
+    border: none; border-radius: 50%; background: rgba(0,0,0,.55);
+    color: #fff; font-size: 14px; line-height: 1; cursor: pointer;
+  }
+  .album-name { font-size: 15px; margin-top: 8px; font-weight: 600; }
+  .album-count { font-size: 13px; color: #888; margin-top: 2px; }
+  .album-add {
+    aspect-ratio: 1; border-radius: 12px; border: 2px dashed rgba(255,255,255,.25);
+    display: flex; align-items: center; justify-content: center;
+    color: #888; font-size: 15px; cursor: pointer; background: rgba(255,255,255,.03);
+  }
+
+  /* ---- 设置 Tab ---- */
+  .settings-card { background: #1e1e24; border-radius: 14px; padding: 16px; margin-bottom: 16px; }
+  .card-title { font-size: 15px; color: #aaa; margin-bottom: 14px; font-weight: 600; }
+
+  /* ---- 单张照片操作浮层 ---- */
+  #photoAction {
+    position: absolute; left: 0; right: 0; bottom: 0; z-index: 5;
+    background: #22222a; border-top-left-radius: 16px; border-top-right-radius: 16px;
+    padding: 14px 16px;
+    padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 14px);
+    display: flex; gap: 12px; align-items: center;
+    box-shadow: 0 -6px 24px rgba(0,0,0,.5);
+  }
+  #actionImg { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; flex-shrink: 0; background: #333; }
+  .action-main { flex: 1; display: flex; flex-direction: column; gap: 10px; }
+  .action-row { display: flex; align-items: center; gap: 10px; }
+  .action-row label { font-size: 14px; color: #aaa; flex-shrink: 0; }
+
+  /* ---- 新建分类输入浮层 ---- */
+  #folderInputOverlay {
+    position: absolute; inset: 0; z-index: 6; background: rgba(0,0,0,.5);
+    display: flex; align-items: center; justify-content: center; padding: 24px;
+  }
+  .folder-card { background: #22222a; border-radius: 14px; padding: 20px; width: 100%; max-width: 360px; }
+  .folder-card h3 { font-size: 16px; margin-bottom: 14px; }
+  .folder-card .row { margin-bottom: 0; }
+
+  /* ---- 底部导航 ---- */
+  .tabbar {
+    display: flex; border-top: 1px solid rgba(255,255,255,.08);
+    flex-shrink: 0; background: #141419;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .tab {
+    flex: 1; padding: 12px 0 10px; text-align: center;
+    background: none; border: none; color: #888; font-size: 15px; cursor: pointer;
+  }
+  .tab.active { color: #3b82f6; font-weight: 600; }
+
+  /* ---- 多选操作栏 ---- */
+  #selectionBar {
+    display: flex; gap: 8px; padding: 10px 12px;
+    padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
+    border-top: 1px solid rgba(255,255,255,.08); flex-shrink: 0; background: #141419;
+  }
+  .sel-btn {
+    flex: 1; padding: 10px 0; font-size: 14px; color: #fff;
+    background: #26262e; border: none; border-radius: 10px; cursor: pointer;
+  }
+  .sel-btn.danger { background: rgba(220,38,38,.85); }
+
+  /* ---- 照片网格选中态 ---- */
+  .grid-item.selected { outline: 2px solid #3b82f6; outline-offset: -2px; }
+  .grid-item.selected::after {
+    content: '✓'; position: absolute; top: 6px; left: 6px;
+    width: 24px; height: 24px; border-radius: 50%;
+    background: #3b82f6; color: #fff; font-size: 14px; line-height: 24px; text-align: center;
+  }
+
+  /* ---- 分类选择浮层 ---- */
+  #folderPickerOverlay {
+    position: absolute; inset: 0; z-index: 7; background: rgba(0,0,0,.5);
+    display: flex; align-items: center; justify-content: center; padding: 24px;
+  }
+  #folderPickerList { display: flex; flex-direction: column; gap: 8px; max-height: 50vh; overflow-y: auto; margin-bottom: 14px; }
+  .picker-item {
+    padding: 12px 16px; font-size: 15px; color: #eee; background: #2a2a32;
+    border: none; border-radius: 10px; cursor: pointer; text-align: left;
+  }
+
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+  <div id="stage">
+    <div class="layer" id="layerA">
+      <img class="bg" alt="">
+      <img class="fg" alt="">
+    </div>
+    <div class="layer" id="layerB">
+      <img class="bg" alt="">
+      <img class="fg" alt="">
+    </div>
+  </div>
+
+  <div id="tip" class="hidden">暂无照片<br>点击右下角「设置」添加照片</div>
+
+  <div id="clock">
+    <div id="clockTime"></div>
+    <div id="clockDate"></div>
+    <div id="clockWeather"></div>
+  </div>
+
+  <button id="settingsBtn">⚙ 设置</button>
+  <button id="exitBtn" class="hidden">退出相框</button>
+
+  <!-- 全屏管理界面：照片 / 相册 / 设置 三 Tab -->
+  <div id="settingsPanel" class="hidden">
+    <div class="panel-head">
+      <span id="panelTitle">照片</span>
+      <div class="head-actions">
+        <button class="btn btn-blue" id="addBtn">＋ 添加照片</button>
+        <button class="panel-close" id="closeSettings">完成</button>
+      </div>
+    </div>
+
+    <div class="panel-body" id="panelBody">
+      <!-- Tab 1：照片（所有照片 / 按分类过滤） -->
+      <div id="photosView">
+        <div class="chip-row" id="chipRow"></div>
+        <div id="photoGrid"></div>
+      </div>
+
+      <!-- Tab 2：相册（分类总览） -->
+      <div id="albumsView" class="hidden">
+        <div id="albumGrid"></div>
+      </div>
+
+      <!-- Tab 3：设置（播放相关） -->
+      <div id="settingsView" class="hidden">
+        <div class="settings-card">
+          <div class="card-title">播放设置</div>
+          <div class="row">
+            <label>播放范围</label>
+            <select id="playFolderSel"></select>
+          </div>
+          <div class="row">
+            <label>播放方式</label>
+            <select id="playModeSel">
+              <option value="sequential">顺序播放</option>
+              <option value="random">随机播放</option>
+            </select>
+          </div>
+        </div>
+        <div class="settings-card">
+          <div class="card-title">切换效果</div>
+          <div class="row">
+            <label>轮播间隔</label>
+            <input type="range" id="intervalRange" min="3" max="60" step="1">
+            <span class="val" id="intervalVal">10 秒</span>
+          </div>
+          <div class="row">
+            <label>过渡方式</label>
+            <select id="transitionSel">
+              <option value="fade">淡入淡出</option>
+              <option value="slide">左右滑动</option>
+              <option value="zoom">缩放</option>
+            </select>
+          </div>
+        </div>
+        <div class="settings-card">
+          <div class="card-title">天气</div>
+          <div class="row">
+            <label>显示天气</label>
+            <select id="weatherToggle">
+              <option value="1">开启</option>
+              <option value="0">关闭</option>
+            </select>
+          </div>
+          <div class="row">
+            <label>城市</label>
+            <select id="weatherCitySel"></select>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 单张照片操作浮层 -->
+    <div id="photoAction" class="hidden">
+      <img id="actionImg" alt="">
+      <div class="action-main">
+        <div class="action-row">
+          <label>所属分类</label>
+          <select id="actionFolderSel" style="flex:1;"></select>
+        </div>
+        <div class="action-row">
+          <button class="btn btn-red" id="actionDelete" style="flex:1;">删除这张照片</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 新建分类输入浮层 -->
+    <div id="folderInputOverlay" class="hidden">
+      <div class="folder-card">
+        <h3>新建分类</h3>
+        <div class="row">
+          <input type="text" id="newFolderInput" placeholder="输入分类名">
+          <button class="btn btn-blue" id="confirmFolderBtn">确定</button>
+          <button class="btn" style="background:rgba(255,255,255,.15);" id="cancelFolderBtn">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 选择目标分类浮层（批量移动/复制用） -->
+    <div id="folderPickerOverlay" class="hidden">
+      <div class="folder-card">
+        <h3 id="folderPickerTitle">选择分类</h3>
+        <div id="folderPickerList"></div>
+        <button class="btn" style="background:rgba(255,255,255,.15); width:100%;" id="folderPickerCancel">取消</button>
+      </div>
+    </div>
+
+    <!-- 底部导航 -->
+    <div class="tabbar">
+      <button class="tab active" data-tab="photos">照片</button>
+      <button class="tab" data-tab="albums">相册</button>
+      <button class="tab" data-tab="settings">设置</button>
+    </div>
+
+    <!-- 多选操作栏 -->
+    <div id="selectionBar" class="hidden">
+      <button class="sel-btn" id="selectAllBtn">全选</button>
+      <button class="sel-btn" id="moveBtn">移动到</button>
+      <button class="sel-btn" id="copyBtn">复制到</button>
+      <button class="sel-btn danger" id="deleteBtn">删除</button>
+    </div>
+  </div>
+
+  <input type="file" id="fileInput" accept="image/*" multiple style="display:none;">
+
+<script>
+/* ====================================================================
+   CONFIG 配置区 —— 基础默认值
+   ==================================================================== */
+const CONFIG = {
+  photos: [
+    "photos/1.jpg",
+    "photos/2.jpg",
+    "photos/3.jpg"
+  ],
+
+  interval: 10,
+  transition: 'fade',
+  transitionMs: 1000,
+  playMode: 'sequential',
+
+  clock: {
+    show: true,
+    position: "top-right",
+    hour12: false,
+    showSeconds: true,
+    showDate: true
+  },
+
+  /* 天气：Open-Meteo 免费接口（无需 key）。city 见下方 CITIES 表，或直接填经纬度 */
+  weather: {
+    enabled: true,
+    city: "深圳",
+    latitude: null,
+    longitude: null,
+    refreshMin: 30
+  },
+
+  ui: { autoHideMs: 3000 },
+  exit: { longPressMs: 5000, autoHideMs: 5000 },
+  settings: { showButton: true }
+};
+
+/* ====================================================================
+   逻辑代码
+   ==================================================================== */
+const stage        = document.getElementById('stage');
+const layers       = [document.getElementById('layerA'), document.getElementById('layerB')];
+const clockEl      = document.getElementById('clock');
+const clockTimeEl  = document.getElementById('clockTime');
+const clockDateEl  = document.getElementById('clockDate');
+const clockWeatherEl = document.getElementById('clockWeather');
+const settingsBtn  = document.getElementById('settingsBtn');
+const exitBtn      = document.getElementById('exitBtn');
+const fileInput    = document.getElementById('fileInput');
+const tipEl        = document.getElementById('tip');
+const settingsPanel = document.getElementById('settingsPanel');
+const panelTitle   = document.getElementById('panelTitle');
+const addBtn       = document.getElementById('addBtn');
+const closeBtn     = document.getElementById('closeSettings');
+const chipRow      = document.getElementById('chipRow');
+const photoGrid    = document.getElementById('photoGrid');
+const albumGrid    = document.getElementById('albumGrid');
+const playFolderSel = document.getElementById('playFolderSel');
+const playModeSel  = document.getElementById('playModeSel');
+const intervalRange = document.getElementById('intervalRange');
+const intervalVal  = document.getElementById('intervalVal');
+const transitionSel = document.getElementById('transitionSel');
+const photoAction  = document.getElementById('photoAction');
+const actionImg    = document.getElementById('actionImg');
+const actionFolderSel = document.getElementById('actionFolderSel');
+const actionDelete = document.getElementById('actionDelete');
+const folderInputOverlay = document.getElementById('folderInputOverlay');
+const newFolderInput = document.getElementById('newFolderInput');
+const confirmFolderBtn = document.getElementById('confirmFolderBtn');
+const cancelFolderBtn = document.getElementById('cancelFolderBtn');
+const selectionBar = document.getElementById('selectionBar');
+const selectAllBtn = document.getElementById('selectAllBtn');
+const moveBtn = document.getElementById('moveBtn');
+const copyBtn = document.getElementById('copyBtn');
+const deleteBtn = document.getElementById('deleteBtn');
+const folderPickerOverlay = document.getElementById('folderPickerOverlay');
+const folderPickerTitle = document.getElementById('folderPickerTitle');
+const folderPickerCancel = document.getElementById('folderPickerCancel');
+const weatherToggle = document.getElementById('weatherToggle');
+const weatherCitySel = document.getElementById('weatherCitySel');
+
+clockEl.classList.add(CONFIG.clock.position);
+if (!CONFIG.settings.showButton) settingsBtn.style.display = 'none';
+
+const DEFAULT_FOLDER = '未分类';
+
+/* ---- 运行设置（持久化） ---- */
+const SETTINGS_KEY = 'photoFrameSettings';
+let settings = {
+  interval: CONFIG.interval,
+  transition: CONFIG.transition,
+  playMode: CONFIG.playMode,
+  playFolder: 'all',
+  weatherEnabled: CONFIG.weather.enabled,
+  weatherCity: CONFIG.weather.city
+};
+function loadSettings() {
+  try {
+    const s = JSON.parse(localStorage.getItem(SETTINGS_KEY));
+    if (s) settings = Object.assign(settings, s);
+  } catch (e) {}
+}
+function saveSettings() {
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {}
+}
+
+/* ---- 状态 ---- */
+let records = [];
+let folders = [];
+let photoList = [];
+let currentIndex = 0;
+let activeLayer = 0;
+let timer = null;
+let longPressTimer = null;
+let exitHideTimer = null;
+let uiHideTimer = null;
+let longPressTriggered = false;
+let pointerStart = null;
+let failCount = 0;
+let settingsOpen = false;
+let currentTab = 'photos';     // photos | albums | settings
+let viewFolder = 'all';        // 照片 Tab 的分类过滤
+let actionId = null;           // 单张操作的照片 id
+let selectionMode = false;     // 多选模式
+let selectedIds = new Set();   // 选中照片的 id（字符串）
+let pickerAction = null;       // 'move' | 'copy'
+
+/* ==================== 过渡方式 ==================== */
+const TRANSITIONS = {
+  fade:  { enterFrom: { opacity: '0' }, enterTo: { opacity: '1' }, exitTo: { opacity: '0' } },
+  slide: { enterFrom: { opacity: '1', transform: 'translateX(100%)' }, enterTo: { opacity: '1', transform: 'translateX(0)' }, exitTo: { opacity: '1', transform: 'translateX(-100%)' } },
+  zoom:  { enterFrom: { opacity: '0', transform: 'scale(1.15)' }, enterTo: { opacity: '1', transform: 'scale(1)' }, exitTo: { opacity: '0', transform: 'scale(0.9)' } }
+};
+function applyStyle(el, s) { Object.assign(el.style, s); }
+
+/* ==================== 播放列表 ==================== */
+function toSrc(r) {
+  if (r.src) return r.src;
+  r.src = r.kind === 'blob' ? URL.createObjectURL(r.blob) : r.url;
+  return r.src;
+}
+function buildPlayList() {
+  if (settings.playFolder === 'all') return records.map(toSrc);
+  return records.filter(r => r.folder === settings.playFolder).map(toSrc);
+}
+
+/* ==================== 照片轮播 ==================== */
+function showPhoto(index, animate = true) {
+  if (photoList.length === 0) { tipEl.classList.remove('hidden'); return; }
+  tipEl.classList.add('hidden');
+  index = ((index % photoList.length) + photoList.length) % photoList.length;
+  currentIndex = index;
+
+  const next = 1 - activeLayer;
+  const old = layers[activeLayer];
+  const layer = layers[next];
+  const bg = layer.querySelector('.bg');
+  const fg = layer.querySelector('.fg');
+
+  fg.onload = () => {
+    failCount = 0;
+    const t = TRANSITIONS[settings.transition] || TRANSITIONS.fade;
+    const ms = CONFIG.transitionMs;
+    layer.style.zIndex = '2';
+    old.style.zIndex = '1';
+    if (animate) {
+      applyStyle(layer, Object.assign({ transition: 'none' }, t.enterFrom));
+      void layer.offsetWidth;
+      applyStyle(layer, Object.assign({ transition: 'opacity ' + ms + 'ms ease, transform ' + ms + 'ms ease' }, t.enterTo));
+      applyStyle(old, Object.assign({ transition: 'opacity ' + ms + 'ms ease, transform ' + ms + 'ms ease' }, t.exitTo));
+    } else {
+      applyStyle(old, Object.assign({ transition: 'none' }, t.exitTo));
+      applyStyle(layer, Object.assign({ transition: 'none' }, t.enterTo));
+    }
+    activeLayer = next;
+    fg.onload = null;
+  };
+  fg.onerror = () => {
+    fg.onerror = null;
+    failCount++;
+    if (failCount >= photoList.length) {
+      tipEl.textContent = '照片加载失败，请检查文件路径或网络';
+      tipEl.classList.remove('hidden');
+      return;
+    }
+    setTimeout(nextPhoto, 500);
+  };
+  bg.src = photoList[index];
+  fg.src = photoList[index];
+}
+
+function scheduleNext() {
+  clearTimeout(timer);
+  if (!settingsOpen) timer = setTimeout(nextPhoto, settings.interval * 1000);
+}
+function nextPhoto() {
+  if (settings.playMode === 'random') randomPhoto(); else showPhoto(currentIndex + 1);
+  scheduleNext();
+}
+function prevPhoto() {
+  if (settings.playMode === 'random') randomPhoto(); else showPhoto(currentIndex - 1);
+  scheduleNext();
+}
+function randomPhoto() {
+  if (photoList.length <= 1) { showPhoto(0); return; }
+  let idx = currentIndex;
+  while (idx === currentIndex) idx = Math.floor(Math.random() * photoList.length);
+  showPhoto(idx);
+}
+
+function restart() {
+  clearTimeout(timer);
+  currentIndex = 0;
+  activeLayer = 0;
+  layers.forEach(l => {
+    l.style.opacity = ''; l.style.transform = ''; l.style.zIndex = '';
+    const fg = l.querySelector('.fg');
+    if (fg) { fg.onload = null; fg.onerror = null; }
+  });
+  failCount = 0;
+  showPhoto(0, false);
+  scheduleNext();
+}
+
+/* ==================== IndexedDB ==================== */
+const DB_NAME = 'photoFrameDB';
+const DB_VERSION = 2;
+const STORE = 'photos';
+const FOLDER_STORE = 'folders';
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    if (!('indexedDB' in window)) { reject(new Error('no indexedDB')); return; }
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'id', autoIncrement: true });
+      if (!db.objectStoreNames.contains(FOLDER_STORE)) db.createObjectStore(FOLDER_STORE, { keyPath: 'id', autoIncrement: true });
+    };
+    req.onsuccess = (e) => resolve(e.target.result);
+    req.onerror   = (e) => reject(e.target.error);
+  });
+}
+function getAll(db, store) {
+  return new Promise((res, rej) => {
+    const r = db.transaction(store, 'readonly').objectStore(store).getAll();
+    r.onsuccess = () => res(r.result || []);
+    r.onerror   = () => rej(r.error);
+  });
+}
+function addTo(db, store, rec) {
+  return new Promise((res, rej) => {
+    const r = db.transaction(store, 'readwrite').objectStore(store).add(rec);
+    r.onsuccess = () => res(r.result);
+    r.onerror   = () => rej(r.error);
+  });
+}
+function putTo(db, store, rec) {
+  return new Promise((res, rej) => {
+    const r = db.transaction(store, 'readwrite').objectStore(store).put(rec);
+    r.onsuccess = () => res();
+    r.onerror   = () => rej(r.error);
+  });
+}
+function deleteFrom(db, store, id) {
+  return new Promise((res, rej) => {
+    const r = db.transaction(store, 'readwrite').objectStore(store).delete(id);
+    r.onsuccess = () => res();
+    r.onerror   = () => rej(r.error);
+  });
+}
+
+async function loadFolders() {
+  try {
+    const db = await openDB();
+    let all = await getAll(db, FOLDER_STORE);
+    if (all.length === 0) {
+      await addTo(db, FOLDER_STORE, { name: DEFAULT_FOLDER });
+      all = await getAll(db, FOLDER_STORE);
+    }
+    db.close();
+    return all.map(f => f.name);
+  } catch (e) {
+    return [DEFAULT_FOLDER];
+  }
+}
+
+async function loadPhotos() {
+  try {
+    const db = await openDB();
+    let all = await getAll(db, STORE);
+    if (all.length === 0) {
+      const recs = CONFIG.photos.map(url => ({ kind: 'url', url, folder: DEFAULT_FOLDER }));
+      for (const r of recs) await addTo(db, STORE, r);
+      all = await getAll(db, STORE);
+    }
+    db.close();
+    return all;
+  } catch (e) {
+    return CONFIG.photos.map((url, i) => ({ id: i, kind: 'url', url, folder: DEFAULT_FOLDER }));
+  }
+}
+
+/* ==================== 分类操作 ==================== */
+async function addFolder(name) {
+  name = (name || '').trim();
+  if (!name || folders.includes(name)) return;
+  try {
+    const db = await openDB();
+    await addTo(db, FOLDER_STORE, { name });
+    db.close();
+  } catch (e) {}
+  folders.push(name);
+  renderChips();
+  renderAlbums();
+}
+
+async function deleteFolder(name) {
+  if (name === DEFAULT_FOLDER) return;
+  try {
+    const db = await openDB();
+    const all = await getAll(db, FOLDER_STORE);
+    const target = all.find(f => f.name === name);
+    if (target) await deleteFrom(db, FOLDER_STORE, target.id);
+    const photos = await getAll(db, STORE);
+    for (const p of photos) {
+      if (p.folder === name) { p.folder = DEFAULT_FOLDER; await putTo(db, STORE, p); }
+    }
+    db.close();
+  } catch (e) {}
+  folders = folders.filter(f => f !== name);
+  records.forEach(r => { if (r.folder === name) r.folder = DEFAULT_FOLDER; });
+  if (settings.playFolder === name) settings.playFolder = 'all';
+  if (viewFolder === name) viewFolder = 'all';
+  saveSettings();
+  renderChips();
+  renderAlbums();
+  renderGrid();
+  refreshPlay();
+}
+
+async function movePhoto(id, folder) {
+  const r = records.find(x => x.id === id);
+  if (!r) return;
+  r.folder = folder;
+  try {
+    const db = await openDB();
+    const all = await getAll(db, STORE);
+    const rec = all.find(x => x.id === id);
+    if (rec) { rec.folder = folder; await putTo(db, STORE, rec); }
+    db.close();
+  } catch (e) {}
+  renderAlbums();
+  refreshPlay();
+}
+
+async function addPhotos(files) {
+  const imgs = Array.from(files || []).filter(f => f.type.startsWith('image/'));
+  if (imgs.length === 0) return;
+  const target = (currentTab === 'photos' && viewFolder !== 'all') ? viewFolder : DEFAULT_FOLDER;
+  try {
+    const db = await openDB();
+    for (const f of imgs) {
+      const id = await addTo(db, STORE, { kind: 'blob', blob: f, name: f.name, folder: target });
+      records.push({ id, kind: 'blob', blob: f, name: f.name, folder: target });
+    }
+    db.close();
+  } catch (e) {
+    imgs.forEach((f, i) => records.push({ id: 'local-' + Date.now() + '-' + i, kind: 'blob', blob: f, name: f.name, folder: target }));
+  }
+  renderChips();
+  renderGrid();
+  renderAlbums();
+  refreshPlay();
+}
+
+async function deletePhoto(id) {
+  try {
+    const db = await openDB();
+    await deleteFrom(db, STORE, id);
+    db.close();
+  } catch (e) {}
+  records = records.filter(r => r.id !== id);
+  renderChips();
+  renderGrid();
+  renderAlbums();
+  refreshPlay();
+}
+
+function refreshPlay() {
+  photoList = buildPlayList();
+  restart();
+}
+
+/* ==================== 管理界面：Tab 切换 ==================== */
+function switchTab(tab) {
+  if (selectionMode) exitSelection();
+  currentTab = tab;
+  document.getElementById('photosView').classList.toggle('hidden', tab !== 'photos');
+  document.getElementById('albumsView').classList.toggle('hidden', tab !== 'albums');
+  document.getElementById('settingsView').classList.toggle('hidden', tab !== 'settings');
+  document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  panelTitle.textContent = tab === 'photos' ? '照片' : tab === 'albums' ? '相册' : '设置';
+  addBtn.style.display = tab === 'settings' ? 'none' : '';
+  addBtn.textContent = tab === 'photos' ? '＋ 添加照片' : '＋ 新建相册';
+  if (tab === 'photos') { renderChips(); renderGrid(); }
+  if (tab === 'albums') renderAlbums();
+  if (tab === 'settings') syncControls();
+  closePhotoAction();
+}
+
+/* ==================== 照片 Tab ==================== */
+function renderChips() {
+  chipRow.innerHTML = '';
+  const names = ['全部'].concat(folders);
+  names.forEach(name => {
+    const c = document.createElement('button');
+    c.className = 'chip' + ((viewFolder === name || (name === '全部' && viewFolder === 'all')) ? ' active' : '');
+    c.textContent = name;
+    c.addEventListener('click', () => {
+      viewFolder = name === '全部' ? 'all' : name;
+      renderChips();
+      renderGrid();
+    });
+    chipRow.appendChild(c);
+  });
+}
+
+function renderGrid() {
+  photoGrid.innerHTML = '';
+  const shown = viewFolder === 'all' ? records : records.filter(r => r.folder === viewFolder);
+  if (shown.length === 0) {
+    photoGrid.innerHTML = '<div class="grid-empty">' + (records.length === 0 ? '暂无照片，点右上角「＋ 添加照片」' : '此分类暂无照片') + '</div>';
+    return;
+  }
+  shown.forEach(r => {
+    const item = document.createElement('div');
+    item.className = 'grid-item';
+    item.dataset.id = String(r.id);
+    if (selectionMode && selectedIds.has(String(r.id))) item.classList.add('selected');
+
+    const img = document.createElement('img');
+    img.src = toSrc(r);
+    img.alt = r.name || '';
+    img.loading = 'lazy';
+    img.draggable = false;
+    item.appendChild(img);
+
+    // 长按进入多选；短按：多选态下切换选中，否则打开单张操作
+    let longTimer = null;
+    let isLong = false;
+    let downX = 0, downY = 0;
+    item.addEventListener('pointerdown', (e) => {
+      downX = e.clientX; downY = e.clientY; isLong = false;
+      longTimer = setTimeout(() => {
+        isLong = true;
+        if (!selectionMode) enterSelection(r.id);
+      }, 500);
+    });
+    item.addEventListener('pointermove', (e) => {
+      if (Math.hypot(e.clientX - downX, e.clientY - downY) > 10) clearTimeout(longTimer);
+    });
+    item.addEventListener('pointerup', () => {
+      clearTimeout(longTimer);
+      if (isLong) return;   // 长按已进入多选，忽略本次松手
+      if (selectionMode) toggleSelect(r.id);
+      else openPhotoAction(r.id);
+    });
+    item.addEventListener('pointercancel', () => clearTimeout(longTimer));
+    item.addEventListener('pointerleave', () => clearTimeout(longTimer));
+
+    photoGrid.appendChild(item);
+  });
+}
+
+/* ==================== 多选模式 ==================== */
+function enterSelection(id) {
+  selectionMode = true;
+  selectedIds = new Set([String(id)]);
+  updateSelectionUI();
+}
+function toggleSelect(id) {
+  const key = String(id);
+  if (selectedIds.has(key)) selectedIds.delete(key); else selectedIds.add(key);
+  if (selectedIds.size === 0) { exitSelection(); return; }
+  updateSelectionUI();
+}
+function exitSelection() {
+  selectionMode = false;
+  selectedIds.clear();
+  updateSelectionUI();
+  renderGrid();
+}
+function updateSelectionUI() {
+  const n = selectedIds.size;
+  const tabbar = document.querySelector('.tabbar');
+  if (selectionMode) {
+    panelTitle.textContent = '已选 ' + n + ' 张';
+    addBtn.style.display = 'none';
+    closeBtn.textContent = '取消';
+    tabbar.classList.add('hidden');
+    selectionBar.classList.remove('hidden');
+  } else {
+    panelTitle.textContent = currentTab === 'photos' ? '照片' : currentTab === 'albums' ? '相册' : '设置';
+    addBtn.style.display = currentTab === 'settings' ? 'none' : '';
+    addBtn.textContent = currentTab === 'photos' ? '＋ 添加照片' : '＋ 新建相册';
+    closeBtn.textContent = '完成';
+    tabbar.classList.remove('hidden');
+    selectionBar.classList.add('hidden');
+  }
+  updateGridSelection();
+}
+function updateGridSelection() {
+  photoGrid.querySelectorAll('.grid-item').forEach(el => {
+    el.classList.toggle('selected', selectedIds.has(el.dataset.id));
+  });
+}
+
+/* ==================== 批量移动 / 复制 / 删除 ==================== */
+async function batchMove(ids, folder) {
+  const idSet = new Set(ids.map(String));
+  const targets = records.filter(r => idSet.has(String(r.id)));
+  const realIds = new Set(targets.map(r => r.id));
+  try {
+    const db = await openDB();
+    const all = await getAll(db, STORE);
+    for (const rec of all) {
+      if (realIds.has(rec.id)) { rec.folder = folder; await putTo(db, STORE, rec); }
+    }
+    db.close();
+  } catch (e) {}
+  targets.forEach(r => r.folder = folder);
+  afterBatch();
+}
+
+async function batchCopy(ids, folder) {
+  const idSet = new Set(ids.map(String));
+  const targets = records.filter(r => idSet.has(String(r.id)));
+  try {
+    const db = await openDB();
+    for (const r of targets) {
+      const rec = { kind: r.kind, folder: folder, name: r.name };
+      if (r.kind === 'blob') rec.blob = r.blob; else rec.url = r.url;
+      const id = await addTo(db, STORE, rec);
+      records.push(Object.assign({ id }, rec));
+    }
+    db.close();
+  } catch (e) {}
+  afterBatch();
+}
+
+async function batchDelete(ids) {
+  const idSet = new Set(ids.map(String));
+  const targets = records.filter(r => idSet.has(String(r.id)));
+  const realIds = targets.map(r => r.id);
+  try {
+    const db = await openDB();
+    for (const id of realIds) await deleteFrom(db, STORE, id);
+    db.close();
+  } catch (e) {}
+  records = records.filter(r => !idSet.has(String(r.id)));
+  afterBatch();
+}
+
+function afterBatch() {
+  renderChips();
+  renderAlbums();
+  refreshPlay();
+  exitSelection();
+}
+
+/* ==================== 选择目标分类浮层 ==================== */
+function showFolderPicker(action) {
+  pickerAction = action;
+  folderPickerTitle.textContent = action === 'move' ? '移动到分类' : '复制到分类';
+  const list = document.getElementById('folderPickerList');
+  list.innerHTML = '';
+  folders.forEach(name => {
+    const b = document.createElement('button');
+    b.className = 'picker-item';
+    b.textContent = name;
+    b.addEventListener('click', () => {
+      const ids = [...selectedIds];
+      if (pickerAction === 'move') batchMove(ids, name);
+      else batchCopy(ids, name);
+      hideFolderPicker();
+    });
+    list.appendChild(b);
+  });
+  folderPickerOverlay.classList.remove('hidden');
+}
+function hideFolderPicker() {
+  pickerAction = null;
+  folderPickerOverlay.classList.add('hidden');
+}
+
+/* ==================== 相册 Tab ==================== */
+function renderAlbums() {
+  albumGrid.innerHTML = '';
+  folders.forEach(name => {
+    const list = records.filter(r => r.folder === name);
+    const card = document.createElement('div');
+    card.className = 'album-card';
+
+    const cover = document.createElement('div');
+    cover.className = 'album-cover';
+    if (list.length > 0) {
+      const img = document.createElement('img');
+      img.src = toSrc(list[0]);
+      img.loading = 'lazy';
+      cover.appendChild(img);
+    }
+    if (name !== DEFAULT_FOLDER) {
+      const del = document.createElement('button');
+      del.className = 'album-del';
+      del.textContent = '✕';
+      del.title = '删除该分类';
+      del.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (confirm('删除分类「' + name + '」？其中 ' + list.length + ' 张照片将移入「' + DEFAULT_FOLDER + '」')) {
+          deleteFolder(name);
+        }
+      });
+      cover.appendChild(del);
+    }
+
+    const nameEl = document.createElement('div');
+    nameEl.className = 'album-name';
+    nameEl.textContent = name;
+    const countEl = document.createElement('div');
+    countEl.className = 'album-count';
+    countEl.textContent = list.length + ' 张';
+
+    card.appendChild(cover);
+    card.appendChild(nameEl);
+    card.appendChild(countEl);
+    card.addEventListener('click', () => {
+      // 点相册 → 跳到照片 Tab 并按该分类过滤
+      viewFolder = name;
+      switchTab('photos');
+    });
+    albumGrid.appendChild(card);
+  });
+
+  // 新建相册卡片
+  const add = document.createElement('div');
+  add.className = 'album-add';
+  add.textContent = '＋ 新建相册';
+  add.addEventListener('click', showFolderInput);
+  albumGrid.appendChild(add);
+}
+
+/* ==================== 设置 Tab ==================== */
+function fillFolderSelect(sel, includeAll, selected) {
+  sel.innerHTML = '';
+  if (includeAll) {
+    const o = document.createElement('option');
+    o.value = 'all'; o.textContent = '全部';
+    sel.appendChild(o);
+  }
+  folders.forEach(name => {
+    const o = document.createElement('option');
+    o.value = name; o.textContent = name;
+    sel.appendChild(o);
+  });
+  if (selected && [...sel.options].some(o => o.value === selected)) sel.value = selected;
+}
+
+function fillWeatherCity() {
+  weatherCitySel.innerHTML = '';
+  Object.keys(CITIES).forEach(name => {
+    const o = document.createElement('option');
+    o.value = name; o.textContent = name;
+    weatherCitySel.appendChild(o);
+  });
+  weatherCitySel.value = settings.weatherCity;
+  weatherToggle.value = settings.weatherEnabled ? '1' : '0';
+}
+
+function syncControls() {
+  intervalRange.value = settings.interval;
+  intervalVal.textContent = settings.interval + ' 秒';
+  transitionSel.value = settings.transition;
+  playModeSel.value = settings.playMode;
+  fillFolderSelect(playFolderSel, true, settings.playFolder);
+  fillWeatherCity();
+}
+
+/* ==================== 单张照片操作浮层 ==================== */
+function openPhotoAction(id) {
+  const r = records.find(x => x.id === id);
+  if (!r) return;
+  actionId = id;
+  actionImg.src = toSrc(r);
+  fillFolderSelect(actionFolderSel, false, r.folder);
+  photoAction.classList.remove('hidden');
+}
+function closePhotoAction() {
+  actionId = null;
+  photoAction.classList.add('hidden');
+}
+actionFolderSel.addEventListener('change', () => {
+  if (actionId == null) return;
+  movePhoto(actionId, actionFolderSel.value);
+  closePhotoAction();
+  renderGrid();
+});
+actionDelete.addEventListener('click', () => {
+  if (actionId == null) return;
+  if (confirm('确定删除这张照片？')) {
+    deletePhoto(actionId);
+    closePhotoAction();
+  }
+});
+
+/* ==================== 新建分类输入浮层 ==================== */
+function showFolderInput() {
+  folderInputOverlay.classList.remove('hidden');
+  newFolderInput.value = '';
+  setTimeout(() => newFolderInput.focus(), 50);
+}
+function hideFolderInput() {
+  folderInputOverlay.classList.add('hidden');
+}
+confirmFolderBtn.addEventListener('click', () => {
+  const name = newFolderInput.value.trim();
+  if (name) addFolder(name);
+  hideFolderInput();
+});
+cancelFolderBtn.addEventListener('click', hideFolderInput);
+newFolderInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') confirmFolderBtn.click(); });
+
+/* ==================== 面板开关与顶栏按钮 ==================== */
+function openSettings() {
+  settingsOpen = true;
+  settingsPanel.classList.remove('hidden');
+  clearTimeout(timer);
+  clearTimeout(uiHideTimer);
+  document.body.classList.add('ui-visible');
+  switchTab('photos');
+}
+function closeSettings() {
+  settingsOpen = false;
+  closePhotoAction();
+  hideFolderInput();
+  hideFolderPicker();
+  if (selectionMode) { selectionMode = false; selectedIds.clear(); }
+  settingsPanel.classList.add('hidden');
+  scheduleNext();
+  showUI();
+}
+
+settingsBtn.addEventListener('click', (e) => { e.stopPropagation(); openSettings(); });
+closeBtn.addEventListener('click', () => {
+  if (selectionMode) { exitSelection(); return; }
+  closeSettings();
+});
+
+/* 多选操作栏事件 */
+selectAllBtn.addEventListener('click', () => {
+  const shown = viewFolder === 'all' ? records : records.filter(r => r.folder === viewFolder);
+  const allSelected = shown.length > 0 && shown.every(r => selectedIds.has(String(r.id)));
+  if (allSelected) selectedIds.clear();
+  else shown.forEach(r => selectedIds.add(String(r.id)));
+  updateSelectionUI();
+});
+moveBtn.addEventListener('click', () => { if (selectedIds.size) showFolderPicker('move'); });
+copyBtn.addEventListener('click', () => { if (selectedIds.size) showFolderPicker('copy'); });
+deleteBtn.addEventListener('click', () => {
+  if (!selectedIds.size) return;
+  if (confirm('确定删除选中的 ' + selectedIds.size + ' 张照片？')) batchDelete([...selectedIds]);
+});
+folderPickerCancel.addEventListener('click', hideFolderPicker);
+
+addBtn.addEventListener('click', () => {
+  if (currentTab === 'photos') fileInput.click();
+  else if (currentTab === 'albums') showFolderInput();
+});
+
+document.querySelectorAll('.tab').forEach(b => {
+  b.addEventListener('click', () => switchTab(b.dataset.tab));
+});
+
+fileInput.addEventListener('change', () => {
+  addPhotos(fileInput.files);
+  fileInput.value = '';
+});
+
+intervalRange.addEventListener('input', () => {
+  settings.interval = parseInt(intervalRange.value, 10);
+  intervalVal.textContent = settings.interval + ' 秒';
+  saveSettings();
+  scheduleNext();
+});
+transitionSel.addEventListener('change', () => {
+  settings.transition = transitionSel.value;
+  saveSettings();
+});
+playModeSel.addEventListener('change', () => {
+  settings.playMode = playModeSel.value;
+  saveSettings();
+});
+playFolderSel.addEventListener('change', () => {
+  settings.playFolder = playFolderSel.value;
+  saveSettings();
+  refreshPlay();
+});
+weatherCitySel.addEventListener('change', () => {
+  settings.weatherCity = weatherCitySel.value;
+  saveSettings();
+  fetchWeather();
+});
+weatherToggle.addEventListener('change', () => {
+  settings.weatherEnabled = weatherToggle.value === '1';
+  saveSettings();
+  if (settings.weatherEnabled) fetchWeather();
+  else clockWeatherEl.textContent = '';
+});
+
+/* ==================== UI 显隐 ==================== */
+function showUI() {
+  document.body.classList.add('ui-visible');
+  clearTimeout(uiHideTimer);
+  uiHideTimer = setTimeout(() => document.body.classList.remove('ui-visible'), CONFIG.ui.autoHideMs);
+}
+
+/* ==================== 手势 ==================== */
+stage.addEventListener('pointerdown', (e) => {
+  showUI();
+  pointerStart = { x: e.clientX, y: e.clientY };
+  longPressTriggered = false;
+  longPressTimer = setTimeout(onLongPress, CONFIG.exit.longPressMs);
+});
+stage.addEventListener('pointermove', (e) => {
+  if (!pointerStart) return;
+  if (Math.hypot(e.clientX - pointerStart.x, e.clientY - pointerStart.y) > 10) {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+  }
+});
+stage.addEventListener('pointerup', (e) => {
+  clearTimeout(longPressTimer);
+  longPressTimer = null;
+  if (!pointerStart) return;
+  const dx = e.clientX - pointerStart.x;
+  const dy = e.clientY - pointerStart.y;
+  const dist = Math.hypot(dx, dy);
+  pointerStart = null;
+  if (longPressTriggered) { longPressTriggered = false; return; }
+  if (dist > 10) {
+    if (Math.abs(dx) > Math.abs(dy)) { dx > 0 ? prevPhoto() : nextPhoto(); }
+  } else {
+    nextPhoto();
+  }
+});
+stage.addEventListener('pointercancel', () => {
+  clearTimeout(longPressTimer);
+  longPressTimer = null;
+  pointerStart = null;
+});
+
+function onLongPress() {
+  longPressTriggered = true;
+  showExitButton();
+}
+
+/* ==================== 退出 ==================== */
+function showExitButton() {
+  exitBtn.classList.remove('hidden');
+  clearTimeout(exitHideTimer);
+  exitHideTimer = setTimeout(hideExitButton, CONFIG.exit.autoHideMs);
+}
+function hideExitButton() { exitBtn.classList.add('hidden'); }
+exitBtn.addEventListener('click', (e) => { e.stopPropagation(); exitFrame(); });
+
+function exitFrame() {
+  try {
+    if (document.fullscreenElement || document.webkitFullscreenElement) {
+      const fn = document.exitFullscreen || document.webkitExitFullscreen;
+      if (fn) fn.call(document);
+    }
+  } catch (e) {}
+  document.body.innerHTML =
+    '<div style="position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;' +
+    'background:#111;color:#eee;font-family:sans-serif;text-align:center;gap:12px;padding:24px;">' +
+    '<div style="font-size:20px;">已退出相框模式</div>' +
+    '<div style="font-size:14px;color:#888;">请关闭此应用，或使用系统的返回手势退出</div></div>';
+}
+
+/* ==================== 屏幕常亮 ==================== */
+let wakeLock = null;
+async function requestWakeLock() {
+  if (!('wakeLock' in navigator)) return;
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+    wakeLock.addEventListener('release', () => { wakeLock = null; });
+  } catch (e) {}
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') requestWakeLock();
+});
+
+/* ==================== 全屏 ==================== */
+function tryFullscreen() {
+  if (document.fullscreenElement || document.webkitFullscreenElement) return; // 已全屏则跳过
+  const el = document.documentElement;
+  const fn = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen || el.msRequestFullscreen;
+  if (fn) { fn.call(el).catch(() => {}); }
+}
+
+/* ==================== 时钟 ==================== */
+const WEEK = ['日','一','二','三','四','五','六'];
+function updateClock() {
+  if (!CONFIG.clock.show) { clockEl.style.display = 'none'; return; }
+  const now = new Date();
+  let h = now.getHours();
+  const m = String(now.getMinutes()).padStart(2, '0');
+  const s = String(now.getSeconds()).padStart(2, '0');
+  let timeStr;
+  if (CONFIG.clock.hour12) {
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    h = h % 12 || 12;
+    timeStr = (CONFIG.clock.showSeconds ? h + ':' + m + ':' + s : h + ':' + m) + ' ' + ampm;
+  } else {
+    h = String(h).padStart(2, '0');
+    timeStr = CONFIG.clock.showSeconds ? h + ':' + m + ':' + s : h + ':' + m;
+  }
+  clockTimeEl.textContent = timeStr;
+  clockDateEl.textContent = CONFIG.clock.showDate
+    ? now.getFullYear() + '年' + (now.getMonth() + 1) + '月' + now.getDate() + '日 星期' + WEEK[now.getDay()]
+    : '';
+}
+
+/* ==================== 天气 ==================== */
+const CITIES = {
+  '北京': [39.90, 116.40], '上海': [31.23, 121.47], '广州': [23.13, 113.26],
+  '深圳': [22.55, 114.06], '杭州': [30.27, 120.16], '成都': [30.57, 104.07],
+  '重庆': [29.56, 106.55], '西安': [34.34, 108.94], '南京': [32.06, 118.80],
+  '武汉': [30.59, 114.31], '天津': [39.13, 117.20], '苏州': [31.30, 120.62],
+  '长沙': [28.23, 112.94], '郑州': [34.75, 113.63], '青岛': [36.07, 120.38],
+  '沈阳': [41.80, 123.43], '大连': [38.91, 121.61], '厦门': [24.48, 118.09],
+  '昆明': [25.04, 102.71], '哈尔滨': [45.80, 126.53]
+};
+const WEATHER_TEXT = {
+  0: '晴', 1: '大部晴朗', 2: '多云', 3: '阴', 45: '雾', 48: '雾凇',
+  51: '小毛毛雨', 53: '毛毛雨', 55: '大毛毛雨', 61: '小雨', 63: '中雨', 65: '大雨',
+  71: '小雪', 73: '中雪', 75: '大雪', 77: '雪粒', 80: '阵雨', 81: '阵雨',
+  82: '强阵雨', 95: '雷阵雨', 96: '雷阵雨伴冰雹', 99: '雷阵雨伴冰雹'
+};
+
+async function fetchWeather() {
+  if (!settings.weatherEnabled) return;
+  let lat = CONFIG.weather.latitude, lon = CONFIG.weather.longitude;
+  const cityName = settings.weatherCity;
+  if (lat == null || lon == null) {
+    const c = CITIES[cityName];
+    if (!c) return;
+    lat = c[0]; lon = c[1];
+  }
+  try {
+    const url = 'https://api.open-meteo.com/v1/forecast?latitude=' + lat + '&longitude=' + lon +
+                '&current_weather=true&timezone=auto';
+    const res = await fetch(url);
+    const data = await res.json();
+    const cw = data && data.current_weather;
+    if (!cw) return;
+    const text = WEATHER_TEXT[cw.weathercode] || '未知';
+    clockWeatherEl.textContent = cityName + ' · ' + text + ' · ' + Math.round(cw.temperature) + '℃';
+  } catch (e) { /* 静默 */ }
+}
+
+/* ==================== 初始化 ==================== */
+async function start() {
+  loadSettings();
+  fetchWeather();
+  folders = await loadFolders();
+  records = await loadPhotos();
+  photoList = buildPlayList();
+  if (photoList.length === 0) tipEl.classList.remove('hidden');
+  restart();
+}
+
+updateClock();
+setInterval(updateClock, 1000);
+requestWakeLock();
+tryFullscreen();
+// 每次触摸都尝试进入全屏（已全屏则跳过），最大化自动全屏成功率
+stage.addEventListener('pointerdown', tryFullscreen);
+setInterval(fetchWeather, Math.max(5, CONFIG.weather.refreshMin) * 60 * 1000);
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+
+start();
+</script>
+</body>
+</html>
