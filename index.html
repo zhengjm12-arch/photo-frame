@@ -141,6 +141,15 @@
   .grid-item img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .grid-empty { grid-column: 1 / -1; color: #777; font-size: 14px; text-align: center; padding: 40px 0; }
 
+  /* ---- 音乐列表 ---- */
+  .music-item {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 10px 12px; margin-bottom: 8px;
+    background: #26262e; border-radius: 10px;
+  }
+  .music-name { flex: 1; font-size: 14px; color: #ddd; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .music-name.playing { color: #6ab7ff; }
+
   /* ---- 相册 Tab ---- */
   #albumGrid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px 12px; }
   @media (min-width: 600px) { #albumGrid { grid-template-columns: repeat(3, 1fr); } }
@@ -337,18 +346,14 @@
             </select>
           </div>
           <div class="row">
-            <label>曲目</label>
-            <select id="musicTrackSel">
-              <option value="piano">柔和钢琴</option>
-              <option value="rain">雨声</option>
-              <option value="ocean">海浪</option>
-            </select>
-          </div>
-          <div class="row">
             <label>音量</label>
             <input type="range" id="musicVolume" min="0" max="100" step="1">
-            <span class="val" id="musicVolumeVal">40%</span>
+            <span class="val" id="musicVolumeVal">50%</span>
           </div>
+          <div class="row">
+            <button class="btn btn-blue" id="addMusicBtn">＋ 添加音乐</button>
+          </div>
+          <div id="musicList"></div>
         </div>
       </div>
     </div>
@@ -405,6 +410,8 @@
   </div>
 
   <input type="file" id="fileInput" accept="image/*" multiple style="display:none;">
+  <input type="file" id="musicFileInput" accept="audio/*" multiple style="display:none;">
+  <audio id="bgm" preload="auto"></audio>
 
 <script>
 /* ====================================================================
@@ -488,9 +495,12 @@ const folderPickerCancel = document.getElementById('folderPickerCancel');
 const weatherToggle = document.getElementById('weatherToggle');
 const weatherCitySel = document.getElementById('weatherCitySel');
 const musicToggle = document.getElementById('musicToggle');
-const musicTrackSel = document.getElementById('musicTrackSel');
 const musicVolume = document.getElementById('musicVolume');
 const musicVolumeVal = document.getElementById('musicVolumeVal');
+const addMusicBtn = document.getElementById('addMusicBtn');
+const musicFileInput = document.getElementById('musicFileInput');
+const musicListEl = document.getElementById('musicList');
+const bgm = document.getElementById('bgm');
 
 clockEl.classList.add(CONFIG.clock.position);
 if (!CONFIG.settings.showButton) settingsBtn.style.display = 'none';
@@ -506,7 +516,7 @@ let settings = {
   playFolder: 'all',
   weatherEnabled: CONFIG.weather.enabled,
   weatherCity: CONFIG.weather.city,
-  music: { enabled: false, track: 'piano', volume: 0.4 }
+  music: { enabled: false, volume: 0.5 }
 };
 function loadSettings() {
   try {
@@ -514,7 +524,7 @@ function loadSettings() {
     if (s) {
       settings = Object.assign(settings, s);
       // music 字段合并保护（兼容旧版本无此字段）
-      settings.music = Object.assign({ enabled: false, track: 'piano', volume: 0.4 }, settings.music || {});
+      settings.music = Object.assign({ enabled: false, volume: 0.5 }, settings.music || {});
     }
   } catch (e) {}
 }
@@ -675,9 +685,10 @@ function restart() {
 
 /* ==================== IndexedDB ==================== */
 const DB_NAME = 'photoFrameDB';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORE = 'photos';
 const FOLDER_STORE = 'folders';
+const MUSIC_STORE = 'music';
 
 function openDB() {
   return new Promise((resolve, reject) => {
@@ -687,6 +698,7 @@ function openDB() {
       const db = e.target.result;
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'id', autoIncrement: true });
       if (!db.objectStoreNames.contains(FOLDER_STORE)) db.createObjectStore(FOLDER_STORE, { keyPath: 'id', autoIncrement: true });
+      if (!db.objectStoreNames.contains(MUSIC_STORE)) db.createObjectStore(MUSIC_STORE, { keyPath: 'id', autoIncrement: true });
     };
     req.onsuccess = (e) => resolve(e.target.result);
     req.onerror   = (e) => reject(e.target.error);
@@ -1134,9 +1146,9 @@ function fillWeatherCity() {
 
 function fillMusic() {
   musicToggle.value = settings.music.enabled ? '1' : '0';
-  musicTrackSel.value = settings.music.track;
   musicVolume.value = Math.round(settings.music.volume * 100);
   musicVolumeVal.textContent = Math.round(settings.music.volume * 100) + '%';
+  renderMusicList();
 }
 
 function syncControls() {
@@ -1287,18 +1299,18 @@ musicToggle.addEventListener('change', () => {
   if (settings.music.enabled) startMusic();
   else stopMusic();
 });
-musicTrackSel.addEventListener('change', () => {
-  settings.music.track = musicTrackSel.value;
-  saveSettings();
-  if (settings.music.enabled) startMusic();
-});
 musicVolume.addEventListener('input', () => {
   musicVolumeVal.textContent = musicVolume.value + '%';
 });
 musicVolume.addEventListener('change', () => {
   settings.music.volume = parseInt(musicVolume.value, 10) / 100;
+  bgm.volume = settings.music.volume;
   saveSettings();
-  if (settings.music.enabled) startMusic();
+});
+addMusicBtn.addEventListener('click', () => musicFileInput.click());
+musicFileInput.addEventListener('change', () => {
+  addMusicFiles(musicFileInput.files);
+  musicFileInput.value = '';
 });
 
 /* ==================== UI 显隐 ==================== */
@@ -1309,23 +1321,24 @@ function showUI() {
 }
 
 /* ==================== 手势 ==================== */
-stage.addEventListener('pointerdown', (e) => {
+const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+
+function gestureDown(x, y) {
   showUI();
-  pointerStart = { x: e.clientX, y: e.clientY };
-  pointerLast = { x: e.clientX, y: e.clientY };
+  pointerStart = { x: x, y: y };
+  pointerLast = { x: x, y: y };
   longPressTriggered = false;
   longPressTimer = setTimeout(onLongPress, CONFIG.exit.longPressMs);
-});
-stage.addEventListener('pointermove', (e) => {
+}
+function gestureMove(x, y) {
   if (!pointerStart) return;
-  pointerLast = { x: e.clientX, y: e.clientY };
-  if (Math.hypot(e.clientX - pointerStart.x, e.clientY - pointerStart.y) > 10) {
+  pointerLast = { x: x, y: y };
+  if (Math.hypot(x - pointerStart.x, y - pointerStart.y) > 10) {
     clearTimeout(longPressTimer);
     longPressTimer = null;
   }
-});
-// 结束手势（pointerup 与 pointercancel 都走这里，防止滑动被浏览器打断后无反应）
-function handleGestureEnd() {
+}
+function gestureEnd() {
   clearTimeout(longPressTimer);
   longPressTimer = null;
   if (!pointerStart) return;
@@ -1342,10 +1355,30 @@ function handleGestureEnd() {
     nextPhoto();
   }
 }
-stage.addEventListener('pointerup', handleGestureEnd);
-stage.addEventListener('pointercancel', handleGestureEnd);
-// 阻止浏览器默认的滚动/缩放手势抢占，保证滑动切换稳定
-stage.addEventListener('touchmove', (e) => { e.preventDefault(); }, { passive: false });
+
+if (isTouchDevice) {
+  // 触摸设备：用最底层的 Touch 事件（最可靠，规避华为浏览器 Pointer 滑动中断的问题）
+  stage.addEventListener('touchstart', (e) => {
+    const t = e.changedTouches[0];
+    gestureDown(t.clientX, t.clientY);
+  }, { passive: true });
+  stage.addEventListener('touchmove', (e) => {
+    const t = e.changedTouches[0];
+    gestureMove(t.clientX, t.clientY);
+    e.preventDefault();   // 阻止滚动/回弹
+  }, { passive: false });
+  stage.addEventListener('touchend', (e) => {
+    gestureEnd();
+    e.preventDefault();   // 阻止随后的 click，避免重复切图
+  });
+  stage.addEventListener('touchcancel', () => { gestureEnd(); });
+} else {
+  // 桌面鼠标：用 Pointer 事件
+  stage.addEventListener('pointerdown', (e) => { gestureDown(e.clientX, e.clientY); });
+  stage.addEventListener('pointermove', (e) => { gestureMove(e.clientX, e.clientY); });
+  stage.addEventListener('pointerup', gestureEnd);
+  stage.addEventListener('pointercancel', gestureEnd);
+}
 
 function onLongPress() {
   longPressTriggered = true;
@@ -1457,130 +1490,113 @@ async function fetchWeather() {
   } catch (e) { /* 静默 */ }
 }
 
-/* ==================== 背景音乐（Web Audio 合成，零外部文件） ==================== */
-let audioCtx = null;
-let musicNodes = [];   // 当前播放中的节点（用于停止）
-let musicTimer = null; // 钢琴和弦循环定时器
+/* ==================== 背景音乐（本地音频文件播放） ==================== */
+let musicList = [];     // [{id, name, blob, url}]
+let musicIndex = -1;
 
-function getAudioCtx() {
-  if (!audioCtx) {
-    const AC = window.AudioContext || window.webkitAudioContext;
-    if (AC) audioCtx = new AC();
-  }
-  return audioCtx;
+async function loadMusicList() {
+  try {
+    const db = await openDB();
+    const all = await getAll(db, MUSIC_STORE);
+    db.close();
+    musicList = all.map(r => ({ id: r.id, name: r.name, blob: r.blob }));
+  } catch (e) { musicList = []; }
 }
 
-function makeNoiseBuffer(ctx, seconds) {
-  const buf = ctx.createBuffer(1, Math.floor(ctx.sampleRate * seconds), ctx.sampleRate);
-  const data = buf.getChannelData(0);
-  for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
-  return buf;
+function playTrack(i) {
+  if (musicList.length === 0) return;
+  musicIndex = ((i % musicList.length) + musicList.length) % musicList.length;
+  const t = musicList[musicIndex];
+  if (!t.url) t.url = URL.createObjectURL(t.blob);
+  bgm.src = t.url;
+  bgm.volume = settings.music.volume;
+  bgm.play().catch(() => {});
+  renderMusicList();
 }
 
 function stopMusic() {
-  if (musicTimer) { clearInterval(musicTimer); musicTimer = null; }
-  musicNodes.forEach(n => { try { n.stop && n.stop(); n.disconnect && n.disconnect(); } catch (e) {} });
-  musicNodes = [];
-}
-
-// 雨声：白噪声 + 低通滤波
-function playRain() {
-  const ctx = getAudioCtx();
-  if (!ctx) return;
-  const src = ctx.createBufferSource();
-  src.buffer = makeNoiseBuffer(ctx, 2);
-  src.loop = true;
-  const filter = ctx.createBiquadFilter();
-  filter.type = 'lowpass';
-  filter.frequency.value = 1100;
-  const gain = ctx.createGain();
-  gain.gain.value = settings.music.volume * 0.5;
-  src.connect(filter); filter.connect(gain); gain.connect(ctx.destination);
-  src.start();
-  musicNodes.push(src);
-}
-
-// 海浪：白噪声 + 慢速 LFO 音量起伏
-function playOcean() {
-  const ctx = getAudioCtx();
-  if (!ctx) return;
-  const src = ctx.createBufferSource();
-  src.buffer = makeNoiseBuffer(ctx, 4);
-  src.loop = true;
-  const filter = ctx.createBiquadFilter();
-  filter.type = 'lowpass';
-  filter.frequency.value = 550;
-  const gain = ctx.createGain();
-  gain.gain.value = settings.music.volume * 0.2;
-  const lfo = ctx.createOscillator();
-  lfo.frequency.value = 0.07;
-  const lfoGain = ctx.createGain();
-  lfoGain.gain.value = settings.music.volume * 0.25;
-  lfo.connect(lfoGain); lfoGain.connect(gain.gain);
-  lfo.start();
-  src.connect(filter); filter.connect(gain); gain.connect(ctx.destination);
-  src.start();
-  musicNodes.push(src, lfo);
-}
-
-// 柔和钢琴：三角波和弦循环（C - Am - F - G）
-const PIANO_CHORDS = [
-  [261.63, 329.63, 392.00, 523.25],
-  [220.00, 261.63, 329.63, 440.00],
-  [174.61, 220.00, 261.63, 349.23],
-  [196.00, 246.94, 293.66, 392.00]
-];
-function playPiano() {
-  const ctx = getAudioCtx();
-  if (!ctx) return;
-  let idx = 0;
-  function chord() {
-    const notes = PIANO_CHORDS[idx % PIANO_CHORDS.length];
-    idx++;
-    notes.forEach((freq) => {
-      const osc = ctx.createOscillator();
-      osc.type = 'triangle';
-      osc.frequency.value = freq;
-      const g = ctx.createGain();
-      const t = ctx.currentTime;
-      g.gain.setValueAtTime(0, t);
-      g.gain.linearRampToValueAtTime(settings.music.volume * 0.12, t + 0.5);
-      g.gain.linearRampToValueAtTime(0, t + 3.8);
-      osc.connect(g); g.connect(ctx.destination);
-      osc.onended = () => { const i = musicNodes.indexOf(osc); if (i >= 0) musicNodes.splice(i, 1); };
-      osc.start(t);
-      osc.stop(t + 4);
-      musicNodes.push(osc);
-    });
-  }
-  chord();
-  musicTimer = setInterval(chord, 4000);
+  try { bgm.pause(); } catch (e) {}
+  bgm.removeAttribute('src');
+  bgm.load();
 }
 
 function startMusic() {
-  stopMusic();
-  if (!settings.music.enabled) return;
-  const ctx = getAudioCtx();
-  if (!ctx) return;
-  if (ctx.state === 'suspended') { try { ctx.resume(); } catch (e) {} }
-  const t = settings.music.track;
-  if (t === 'rain') playRain();
-  else if (t === 'ocean') playOcean();
-  else playPiano();
+  if (!settings.music.enabled) { stopMusic(); return; }
+  if (musicList.length === 0) return;
+  bgm.volume = settings.music.volume;
+  if (!bgm.src || musicIndex < 0) playTrack(musicIndex < 0 ? 0 : musicIndex);
+  else bgm.play().catch(() => {});
 }
 
-// 首次用户交互时激活音频（移动端要求手势后 AudioContext 才能发声）
+// 一首播完自动切下一首（列表循环）
+bgm.addEventListener('ended', () => {
+  if (settings.music.enabled && musicList.length > 0) playTrack(musicIndex + 1);
+});
+
+// 首次用户交互时激活播放（移动端自动播放限制）
 function ensureMusicStarted() {
-  if (!settings.music.enabled) return;
-  const ctx = getAudioCtx();
-  if (ctx && ctx.state === 'suspended') { try { ctx.resume(); } catch (e) {} }
-  if (musicNodes.length === 0) startMusic();
+  if (!settings.music.enabled || musicList.length === 0) return;
+  if (!bgm.src) startMusic();
+  else if (bgm.paused) bgm.play().catch(() => {});
+}
+
+function renderMusicList() {
+  musicListEl.innerHTML = '';
+  if (musicList.length === 0) {
+    musicListEl.innerHTML = '<div class="grid-empty">暂无音乐，点「＋ 添加音乐」导入 mp3 等音频文件</div>';
+    return;
+  }
+  musicList.forEach((m, i) => {
+    const row = document.createElement('div');
+    row.className = 'music-item';
+    const name = document.createElement('span');
+    name.className = 'music-name' + (i === musicIndex && settings.music.enabled ? ' playing' : '');
+    name.textContent = m.name;
+    const del = document.createElement('button');
+    del.className = 'btn btn-red';
+    del.textContent = '删除';
+    del.addEventListener('click', () => deleteMusic(m.id));
+    row.appendChild(name);
+    row.appendChild(del);
+    musicListEl.appendChild(row);
+  });
+}
+
+async function addMusicFiles(files) {
+  const audios = Array.from(files || []).filter(f => f.type.startsWith('audio/') || /\.(mp3|m4a|wav|flac|ogg|aac|amr)$/i.test(f.name));
+  if (audios.length === 0) return;
+  try {
+    const db = await openDB();
+    for (const f of audios) {
+      const id = await addTo(db, MUSIC_STORE, { name: f.name, blob: f });
+      musicList.push({ id, name: f.name, blob: f });
+    }
+    db.close();
+  } catch (e) {
+    audios.forEach((f, i) => musicList.push({ id: 'm-local-' + Date.now() + '-' + i, name: f.name, blob: f }));
+  }
+  renderMusicList();
+  if (settings.music.enabled && musicIndex < 0) startMusic();
+}
+
+async function deleteMusic(id) {
+  try {
+    const db = await openDB();
+    await deleteFrom(db, MUSIC_STORE, id);
+    db.close();
+  } catch (e) {}
+  const idx = musicList.findIndex(m => m.id === id);
+  musicList = musicList.filter(m => m.id !== id);
+  if (musicList.length === 0) { musicIndex = -1; stopMusic(); }
+  else if (idx <= musicIndex) { musicIndex = -1; if (settings.music.enabled) playTrack(0); }
+  renderMusicList();
 }
 
 /* ==================== 初始化 ==================== */
 async function start() {
   loadSettings();
   fetchWeather();
+  await loadMusicList();
   folders = await loadFolders();
   records = await loadPhotos();
   photoList = buildPlayList();
