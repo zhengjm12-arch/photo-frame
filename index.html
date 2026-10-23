@@ -27,6 +27,7 @@
   .layer {
     position: absolute; inset: 0; width: 100%; height: 100%;
     opacity: 0; transform: none; pointer-events: none;
+    touch-action: none;
     will-change: opacity, transform;
   }
   .layer .bg {
@@ -326,6 +327,29 @@
             <select id="weatherCitySel"></select>
           </div>
         </div>
+        <div class="settings-card">
+          <div class="card-title">音乐</div>
+          <div class="row">
+            <label>背景音乐</label>
+            <select id="musicToggle">
+              <option value="1">开启</option>
+              <option value="0">关闭</option>
+            </select>
+          </div>
+          <div class="row">
+            <label>曲目</label>
+            <select id="musicTrackSel">
+              <option value="piano">柔和钢琴</option>
+              <option value="rain">雨声</option>
+              <option value="ocean">海浪</option>
+            </select>
+          </div>
+          <div class="row">
+            <label>音量</label>
+            <input type="range" id="musicVolume" min="0" max="100" step="1">
+            <span class="val" id="musicVolumeVal">40%</span>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -463,6 +487,10 @@ const folderPickerTitle = document.getElementById('folderPickerTitle');
 const folderPickerCancel = document.getElementById('folderPickerCancel');
 const weatherToggle = document.getElementById('weatherToggle');
 const weatherCitySel = document.getElementById('weatherCitySel');
+const musicToggle = document.getElementById('musicToggle');
+const musicTrackSel = document.getElementById('musicTrackSel');
+const musicVolume = document.getElementById('musicVolume');
+const musicVolumeVal = document.getElementById('musicVolumeVal');
 
 clockEl.classList.add(CONFIG.clock.position);
 if (!CONFIG.settings.showButton) settingsBtn.style.display = 'none';
@@ -477,12 +505,17 @@ let settings = {
   playMode: CONFIG.playMode,
   playFolder: 'all',
   weatherEnabled: CONFIG.weather.enabled,
-  weatherCity: CONFIG.weather.city
+  weatherCity: CONFIG.weather.city,
+  music: { enabled: false, track: 'piano', volume: 0.4 }
 };
 function loadSettings() {
   try {
     const s = JSON.parse(localStorage.getItem(SETTINGS_KEY));
-    if (s) settings = Object.assign(settings, s);
+    if (s) {
+      settings = Object.assign(settings, s);
+      // music 字段合并保护（兼容旧版本无此字段）
+      settings.music = Object.assign({ enabled: false, track: 'piano', volume: 0.4 }, settings.music || {});
+    }
   } catch (e) {}
 }
 function saveSettings() {
@@ -501,6 +534,7 @@ let exitHideTimer = null;
 let uiHideTimer = null;
 let longPressTriggered = false;
 let pointerStart = null;
+let pointerLast = null;   // 手指最后一次位置（用于 pointercancel 时仍能判断滑动）
 let failCount = 0;
 let settingsOpen = false;
 let currentTab = 'photos';     // photos | albums | settings
@@ -523,6 +557,38 @@ function toSrc(r) {
   if (r.src) return r.src;
   r.src = r.kind === 'blob' ? URL.createObjectURL(r.blob) : r.url;
   return r.src;
+}
+
+/* 生成缩略图（降采样到 maxSize，返回 Blob，失败返回 null） */
+function makeThumb(blob, maxSize) {
+  maxSize = maxSize || 240;
+  return new Promise((resolve) => {
+    try {
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const scale = Math.min(1, maxSize / Math.max(img.width, img.height));
+          const w = Math.max(1, Math.round(img.width * scale));
+          const h = Math.max(1, Math.round(img.height * scale));
+          const canvas = document.createElement('canvas');
+          canvas.width = w; canvas.height = h;
+          canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+          canvas.toBlob((tb) => resolve(tb), 'image/jpeg', 0.72);
+        } catch (e) { resolve(null); }
+        URL.revokeObjectURL(url);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+      img.src = url;
+    } catch (e) { resolve(null); }
+  });
+}
+
+/* 取缩略图地址（无缩略图时降级原图） */
+function getThumb(r) {
+  if (r.thumbSrc) return r.thumbSrc;
+  if (r.thumb) { r.thumbSrc = URL.createObjectURL(r.thumb); return r.thumbSrc; }
+  return toSrc(r);
 }
 function buildPlayList() {
   if (settings.playFolder === 'all') return records.map(toSrc);
@@ -746,8 +812,10 @@ async function addPhotos(files) {
   try {
     const db = await openDB();
     for (const f of imgs) {
-      const id = await addTo(db, STORE, { kind: 'blob', blob: f, name: f.name, folder: target });
-      records.push({ id, kind: 'blob', blob: f, name: f.name, folder: target });
+      const thumb = await makeThumb(f);   // 生成缩略图，网格/封面用，降低内存与卡顿
+      const rec = { kind: 'blob', blob: f, name: f.name, folder: target, thumb: thumb || undefined };
+      const id = await addTo(db, STORE, rec);
+      records.push(Object.assign({ id }, rec));
     }
     db.close();
   } catch (e) {
@@ -825,9 +893,10 @@ function renderGrid() {
     if (selectionMode && selectedIds.has(String(r.id))) item.classList.add('selected');
 
     const img = document.createElement('img');
-    img.src = toSrc(r);
+    img.src = getThumb(r);
     img.alt = r.name || '';
     img.loading = 'lazy';
+    img.decoding = 'async';
     img.draggable = false;
     item.appendChild(img);
 
@@ -991,8 +1060,9 @@ function renderAlbums() {
     cover.className = 'album-cover';
     if (list.length > 0) {
       const img = document.createElement('img');
-      img.src = toSrc(list[0]);
+      img.src = getThumb(list[0]);
       img.loading = 'lazy';
+      img.decoding = 'async';
       cover.appendChild(img);
     }
     if (name !== DEFAULT_FOLDER) {
@@ -1062,6 +1132,13 @@ function fillWeatherCity() {
   weatherToggle.value = settings.weatherEnabled ? '1' : '0';
 }
 
+function fillMusic() {
+  musicToggle.value = settings.music.enabled ? '1' : '0';
+  musicTrackSel.value = settings.music.track;
+  musicVolume.value = Math.round(settings.music.volume * 100);
+  musicVolumeVal.textContent = Math.round(settings.music.volume * 100) + '%';
+}
+
 function syncControls() {
   intervalRange.value = settings.interval;
   intervalVal.textContent = settings.interval + ' 秒';
@@ -1069,6 +1146,7 @@ function syncControls() {
   playModeSel.value = settings.playMode;
   fillFolderSelect(playFolderSel, true, settings.playFolder);
   fillWeatherCity();
+  fillMusic();
 }
 
 /* ==================== 单张照片操作浮层 ==================== */
@@ -1202,6 +1280,27 @@ weatherToggle.addEventListener('change', () => {
   else clockWeatherEl.textContent = '';
 });
 
+/* 音乐控制 */
+musicToggle.addEventListener('change', () => {
+  settings.music.enabled = musicToggle.value === '1';
+  saveSettings();
+  if (settings.music.enabled) startMusic();
+  else stopMusic();
+});
+musicTrackSel.addEventListener('change', () => {
+  settings.music.track = musicTrackSel.value;
+  saveSettings();
+  if (settings.music.enabled) startMusic();
+});
+musicVolume.addEventListener('input', () => {
+  musicVolumeVal.textContent = musicVolume.value + '%';
+});
+musicVolume.addEventListener('change', () => {
+  settings.music.volume = parseInt(musicVolume.value, 10) / 100;
+  saveSettings();
+  if (settings.music.enabled) startMusic();
+});
+
 /* ==================== UI 显隐 ==================== */
 function showUI() {
   document.body.classList.add('ui-visible');
@@ -1213,36 +1312,40 @@ function showUI() {
 stage.addEventListener('pointerdown', (e) => {
   showUI();
   pointerStart = { x: e.clientX, y: e.clientY };
+  pointerLast = { x: e.clientX, y: e.clientY };
   longPressTriggered = false;
   longPressTimer = setTimeout(onLongPress, CONFIG.exit.longPressMs);
 });
 stage.addEventListener('pointermove', (e) => {
   if (!pointerStart) return;
+  pointerLast = { x: e.clientX, y: e.clientY };
   if (Math.hypot(e.clientX - pointerStart.x, e.clientY - pointerStart.y) > 10) {
     clearTimeout(longPressTimer);
     longPressTimer = null;
   }
 });
-stage.addEventListener('pointerup', (e) => {
+// 结束手势（pointerup 与 pointercancel 都走这里，防止滑动被浏览器打断后无反应）
+function handleGestureEnd() {
   clearTimeout(longPressTimer);
   longPressTimer = null;
   if (!pointerStart) return;
-  const dx = e.clientX - pointerStart.x;
-  const dy = e.clientY - pointerStart.y;
+  if (!pointerLast) pointerLast = pointerStart;
+  const dx = pointerLast.x - pointerStart.x;
+  const dy = pointerLast.y - pointerStart.y;
   const dist = Math.hypot(dx, dy);
   pointerStart = null;
+  pointerLast = null;
   if (longPressTriggered) { longPressTriggered = false; return; }
   if (dist > 10) {
     if (Math.abs(dx) > Math.abs(dy)) { dx > 0 ? prevPhoto() : nextPhoto(); }
   } else {
     nextPhoto();
   }
-});
-stage.addEventListener('pointercancel', () => {
-  clearTimeout(longPressTimer);
-  longPressTimer = null;
-  pointerStart = null;
-});
+}
+stage.addEventListener('pointerup', handleGestureEnd);
+stage.addEventListener('pointercancel', handleGestureEnd);
+// 阻止浏览器默认的滚动/缩放手势抢占，保证滑动切换稳定
+stage.addEventListener('touchmove', (e) => { e.preventDefault(); }, { passive: false });
 
 function onLongPress() {
   longPressTriggered = true;
@@ -1354,6 +1457,126 @@ async function fetchWeather() {
   } catch (e) { /* 静默 */ }
 }
 
+/* ==================== 背景音乐（Web Audio 合成，零外部文件） ==================== */
+let audioCtx = null;
+let musicNodes = [];   // 当前播放中的节点（用于停止）
+let musicTimer = null; // 钢琴和弦循环定时器
+
+function getAudioCtx() {
+  if (!audioCtx) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (AC) audioCtx = new AC();
+  }
+  return audioCtx;
+}
+
+function makeNoiseBuffer(ctx, seconds) {
+  const buf = ctx.createBuffer(1, Math.floor(ctx.sampleRate * seconds), ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+  return buf;
+}
+
+function stopMusic() {
+  if (musicTimer) { clearInterval(musicTimer); musicTimer = null; }
+  musicNodes.forEach(n => { try { n.stop && n.stop(); n.disconnect && n.disconnect(); } catch (e) {} });
+  musicNodes = [];
+}
+
+// 雨声：白噪声 + 低通滤波
+function playRain() {
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  const src = ctx.createBufferSource();
+  src.buffer = makeNoiseBuffer(ctx, 2);
+  src.loop = true;
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.value = 1100;
+  const gain = ctx.createGain();
+  gain.gain.value = settings.music.volume * 0.5;
+  src.connect(filter); filter.connect(gain); gain.connect(ctx.destination);
+  src.start();
+  musicNodes.push(src);
+}
+
+// 海浪：白噪声 + 慢速 LFO 音量起伏
+function playOcean() {
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  const src = ctx.createBufferSource();
+  src.buffer = makeNoiseBuffer(ctx, 4);
+  src.loop = true;
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.value = 550;
+  const gain = ctx.createGain();
+  gain.gain.value = settings.music.volume * 0.2;
+  const lfo = ctx.createOscillator();
+  lfo.frequency.value = 0.07;
+  const lfoGain = ctx.createGain();
+  lfoGain.gain.value = settings.music.volume * 0.25;
+  lfo.connect(lfoGain); lfoGain.connect(gain.gain);
+  lfo.start();
+  src.connect(filter); filter.connect(gain); gain.connect(ctx.destination);
+  src.start();
+  musicNodes.push(src, lfo);
+}
+
+// 柔和钢琴：三角波和弦循环（C - Am - F - G）
+const PIANO_CHORDS = [
+  [261.63, 329.63, 392.00, 523.25],
+  [220.00, 261.63, 329.63, 440.00],
+  [174.61, 220.00, 261.63, 349.23],
+  [196.00, 246.94, 293.66, 392.00]
+];
+function playPiano() {
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  let idx = 0;
+  function chord() {
+    const notes = PIANO_CHORDS[idx % PIANO_CHORDS.length];
+    idx++;
+    notes.forEach((freq) => {
+      const osc = ctx.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.value = freq;
+      const g = ctx.createGain();
+      const t = ctx.currentTime;
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(settings.music.volume * 0.12, t + 0.5);
+      g.gain.linearRampToValueAtTime(0, t + 3.8);
+      osc.connect(g); g.connect(ctx.destination);
+      osc.onended = () => { const i = musicNodes.indexOf(osc); if (i >= 0) musicNodes.splice(i, 1); };
+      osc.start(t);
+      osc.stop(t + 4);
+      musicNodes.push(osc);
+    });
+  }
+  chord();
+  musicTimer = setInterval(chord, 4000);
+}
+
+function startMusic() {
+  stopMusic();
+  if (!settings.music.enabled) return;
+  const ctx = getAudioCtx();
+  if (!ctx) return;
+  if (ctx.state === 'suspended') { try { ctx.resume(); } catch (e) {} }
+  const t = settings.music.track;
+  if (t === 'rain') playRain();
+  else if (t === 'ocean') playOcean();
+  else playPiano();
+}
+
+// 首次用户交互时激活音频（移动端要求手势后 AudioContext 才能发声）
+function ensureMusicStarted() {
+  if (!settings.music.enabled) return;
+  const ctx = getAudioCtx();
+  if (ctx && ctx.state === 'suspended') { try { ctx.resume(); } catch (e) {} }
+  if (musicNodes.length === 0) startMusic();
+}
+
 /* ==================== 初始化 ==================== */
 async function start() {
   loadSettings();
@@ -1371,6 +1594,8 @@ requestWakeLock();
 tryFullscreen();
 // 每次触摸都尝试进入全屏（已全屏则跳过），最大化自动全屏成功率
 stage.addEventListener('pointerdown', tryFullscreen);
+// 首次交互激活/恢复背景音乐（移动端自动播放限制）
+document.addEventListener('pointerdown', ensureMusicStarted);
 setInterval(fetchWeather, Math.max(5, CONFIG.weather.refreshMin) * 60 * 1000);
 
 if ('serviceWorker' in navigator) {
