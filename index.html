@@ -410,7 +410,7 @@
   </div>
 
   <input type="file" id="fileInput" accept="image/*" multiple style="display:none;">
-  <input type="file" id="musicFileInput" accept="audio/*" multiple style="display:none;">
+  <input type="file" id="musicFileInput" accept="audio/*,.mp3,.m4a,.flac,.wav,.ogg,.aac" multiple style="display:none;">
   <audio id="bgm" preload="auto"></audio>
 
 <script>
@@ -1321,7 +1321,7 @@ function showUI() {
 }
 
 /* ==================== 手势 ==================== */
-const isTouchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+let activeGesture = null;   // 'touch' | 'pointer'，防止两种事件重复处理
 
 function gestureDown(x, y) {
   showUI();
@@ -1356,29 +1356,53 @@ function gestureEnd() {
   }
 }
 
-if (isTouchDevice) {
-  // 触摸设备：用最底层的 Touch 事件（最可靠，规避华为浏览器 Pointer 滑动中断的问题）
-  stage.addEventListener('touchstart', (e) => {
-    const t = e.changedTouches[0];
-    gestureDown(t.clientX, t.clientY);
-  }, { passive: true });
-  stage.addEventListener('touchmove', (e) => {
-    const t = e.changedTouches[0];
-    gestureMove(t.clientX, t.clientY);
-    e.preventDefault();   // 阻止滚动/回弹
-  }, { passive: false });
-  stage.addEventListener('touchend', (e) => {
-    gestureEnd();
-    e.preventDefault();   // 阻止随后的 click，避免重复切图
-  });
-  stage.addEventListener('touchcancel', () => { gestureEnd(); });
-} else {
-  // 桌面鼠标：用 Pointer 事件
-  stage.addEventListener('pointerdown', (e) => { gestureDown(e.clientX, e.clientY); });
-  stage.addEventListener('pointermove', (e) => { gestureMove(e.clientX, e.clientY); });
-  stage.addEventListener('pointerup', gestureEnd);
-  stage.addEventListener('pointercancel', gestureEnd);
-}
+// Touch 事件（触摸设备）
+stage.addEventListener('touchstart', (e) => {
+  if (activeGesture) return;
+  const t = e.touches[0] || e.changedTouches[0];
+  if (!t) return;
+  activeGesture = 'touch';
+  gestureDown(t.clientX, t.clientY);
+}, { passive: true });
+stage.addEventListener('touchmove', (e) => {
+  if (activeGesture !== 'touch') return;
+  // 关键：touchmove 必须用 touches[0]（changedTouches 在部分浏览器为空，会导致滑动被判成单击）
+  const t = e.touches[0] || e.changedTouches[0];
+  if (!t) return;
+  gestureMove(t.clientX, t.clientY);
+  if (e.cancelable) e.preventDefault();
+}, { passive: false });
+stage.addEventListener('touchend', () => {
+  if (activeGesture !== 'touch') return;
+  activeGesture = null;
+  gestureEnd();
+});
+stage.addEventListener('touchcancel', () => {
+  if (activeGesture !== 'touch') return;
+  activeGesture = null;
+  gestureEnd();
+});
+
+// Pointer 事件（桌面鼠标兜底）
+stage.addEventListener('pointerdown', (e) => {
+  if (activeGesture) return;
+  activeGesture = 'pointer';
+  gestureDown(e.clientX, e.clientY);
+});
+stage.addEventListener('pointermove', (e) => {
+  if (activeGesture !== 'pointer') return;
+  gestureMove(e.clientX, e.clientY);
+});
+stage.addEventListener('pointerup', () => {
+  if (activeGesture !== 'pointer') return;
+  activeGesture = null;
+  gestureEnd();
+});
+stage.addEventListener('pointercancel', () => {
+  if (activeGesture !== 'pointer') return;
+  activeGesture = null;
+  gestureEnd();
+});
 
 function onLongPress() {
   longPressTriggered = true;
@@ -1563,8 +1587,18 @@ function renderMusicList() {
 }
 
 async function addMusicFiles(files) {
-  const audios = Array.from(files || []).filter(f => f.type.startsWith('audio/') || /\.(mp3|m4a|wav|flac|ogg|aac|amr)$/i.test(f.name));
-  if (audios.length === 0) return;
+  const all = Array.from(files || []);
+  if (all.length === 0) return;   // 用户取消了选择，静默
+  // 放宽过滤：type 为空 / audio 类型 / 常见音频扩展名 都接受
+  const audios = all.filter(f => {
+    const name = (f.name || '').toLowerCase();
+    return f.type === '' || f.type.startsWith('audio/') ||
+           /\.(mp3|m4a|wav|flac|ogg|aac|amr|wma|opus|m4b|mpga)$/i.test(name);
+  });
+  if (audios.length === 0) {
+    alert('没有选到可播放的音频文件。\n请选择普通的 mp3 / m4a / flac / wav 文件。\n注意：QQ音乐(.mgg)、网易云(.ncm) 等加密格式无法在网页里播放。');
+    return;
+  }
   try {
     const db = await openDB();
     for (const f of audios) {

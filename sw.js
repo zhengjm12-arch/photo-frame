@@ -1,5 +1,5 @@
 /* 电子相框 Service Worker：缓存静态资源，支持离线打开 */
-const CACHE = 'photo-frame-v12';
+const CACHE = 'photo-frame-v14';
 const ASSETS = [
   './',
   './index.html',
